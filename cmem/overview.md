@@ -9,8 +9,11 @@ read its WIT-described interface, and expose each export as an idiomatic, typed 
 Canonical-ABI marshalling handled for the caller (numbers direct, strings/aggregates encoded and
 decoded through linear memory, booleans normalized).
 
-- **Language / runtime:** Go, built on the **wazero** pure-Go WebAssembly runtime (no cgo, no
-  external WASM engine).
+- **Language / runtime:** Go, built on **wasmtime-go** (the official wasmtime Go embedding; CGO +
+  the native `libwasmtime`). **Decided over pure-Go wazero 2026-06-15** — wasmtime's Cranelift JIT is
+  faster, and it follows the ecosystem's "native runtimes use wasmtime" principle (see wasmtk
+  `cmem/vision.md` → "Loader runtime + WASI strategy"). **WASI Preview 1 is built into wasmtime-go** —
+  no hand-rolled shim needed (SPEC §10). Cost vs. wazero: CGO + a per-platform native lib to ship.
 - **Package registry / distribution:** **pkg.go.dev** (consumed via `go get`).
 
 ## Current state — EARLY STUB (verified 2026-06-15)
@@ -24,12 +27,12 @@ only:
 - `.gitignore` — standard Go ignore rules
 - `cmem/` — this portable memory folder
 
-There is **no `go.mod`**, **no `*.go` files**, no `wazero` dependency wired up, and no tests. Git
+There is **no `go.mod`**, **no `*.go` files**, no `wasmtime-go` dependency wired up, and no tests. Git
 history is two commits (`Initial commit`, `update docs`).
 
 ### What's missing (everything functional)
 
-- `go.mod` declaring the module path + `wazero` dependency
+- `go.mod` declaring the module path + `wasmtime-go` dependency
 - The loader API itself (see below)
 - WIT parsing / interface introspection
 - Canonical ABI marshalling code
@@ -41,7 +44,7 @@ The Go-idiomatic equivalents of the reference loader's `wasmImport` / `createSin
 `InstancePool` are **not present**. When implemented they should mirror the cross-language SPEC
 while reading naturally in Go — likely something like a `Load(ctx, path, opts) (*Module, error)`
 singleton entry point and a pool type (`NewPool(...)` with `Acquire`/`Release`/`Run`) backed by
-fresh wazero instances. Treat the exact shape as undecided until the first package lands; record
+fresh wasmtime-go instances. Treat the exact shape as undecided until the first package lands; record
 the decision here when it is made.
 
 ## Canonical ABI / SPEC conformance status
