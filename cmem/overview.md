@@ -2,73 +2,95 @@
 
 ## What this is
 
-`universalWasmLoader-go` is intended to be the **Go port** of the Universal WASM Loader — the
-cross-language family of WIT-aware WebAssembly loaders. Like its siblings (the reference JS/TS
-`universalWasmLoader`, plus the Rust and Python ports), its job is to load a `.wasm` component,
-read its WIT-described interface, and expose each export as an idiomatic, typed Go function with
-Canonical-ABI marshalling handled for the caller (numbers direct, strings/aggregates encoded and
-decoded through linear memory, booleans normalized).
+`universalWasmLoader-go` is the **Go port** of the Universal WASM Loader — the cross-language family
+of WIT-aware WebAssembly loaders. It loads a `.wasm` library (the reactor/library shape `wasmtk modc`
+produces), reads its WIT-described interface, and exposes each export as an idiomatic Go call with
+Canonical-ABI marshalling handled for the caller (numbers direct, strings encoded/decoded through
+linear memory, booleans normalized). No `.wit` → raw exports.
 
-- **Language / runtime:** Go, built on **wasmtime-go** (the official wasmtime Go embedding; CGO +
-  the native `libwasmtime`). **Decided over pure-Go wazero 2026-06-15** — wasmtime's Cranelift JIT is
-  faster, and it follows the ecosystem's "native runtimes use wasmtime" principle (see wasmtk
-  `cmem/vision.md` → "Loader runtime + WASI strategy"). **WASI Preview 1 is built into wasmtime-go** —
-  no hand-rolled shim needed (SPEC §10). Cost vs. wazero: CGO + a per-platform native lib to ship.
-- **Package registry / distribution:** **pkg.go.dev** (consumed via `go get`).
+- **Language / runtime:** Go, built on **pure-Go [wazero]** (no CGO). **Package:** `wasmloader`,
+  module path `github.com/jrmarcum/universalWasmLoader-go`.
+- **Distribution:** **pkg.go.dev** via `go get` + a semver `vX.Y.Z` git tag (no registry upload step).
 
-## Current state — EARLY STUB (verified 2026-06-15)
+[wazero]: https://github.com/tetratelabs/wazero
 
-This repo is a **pre-implementation stub**. There is **no Go source code yet**. The repo contains
-only:
+## Runtime decision — wazero (REVERSED from wasmtime-go, 2026-06-17)
 
-- `README.md` — one line ("Universal wasm loader for Go")
-- `CLAUDE.md` — archive notes (now with a `cmem/` pointer prepended)
-- `LICENSE`
-- `.gitignore` — standard Go ignore rules
-- `cmem/` — this portable memory folder
+**Decided: wazero.** This **reverses** the 2026-06-15 "wasmtime-go (Cranelift + ecosystem
+consistency)" note after a head-to-head benchmark on this machine (Go 1.26, Windows/amd64; same
+`bench.wasm` with a trivial `add` for call overhead and a `sumto(100000)` compute loop):
 
-There is **no `go.mod`**, **no `*.go` files**, no `wasmtime-go` dependency wired up, and no tests. Git
-history is two commits (`Initial commit`, `update docs`).
+| Metric | **wazero** (pure-Go) | **wasmtime-go** (CGO + Cranelift) |
+| --- | --- | --- |
+| Instantiate | ~0.5 ms | ~1–2.6 ms |
+| `add()` per-call overhead | **~36 ns/call** | **~1370 ns/call** |
+| `sumto(100k)` compute | ~28 µs/call | ~38 µs/call |
 
-### What's missing (everything functional)
+- **Call overhead: wazero ~38× faster.** The ~1.3 µs gap is the **CGO boundary** (every wasmtime-go
+  call crosses Go→C→wasm). A loader's whole job is calling exports, so this dominates.
+- **Compute: wazero also faster here** — its optimizing compiler is excellent on this loop and carries
+  no per-call tax. (Cranelift may edge ahead on some long-running single-call workloads; not the
+  loader's profile.)
+- **Instantiate: wazero faster.**
+- **Plus pure-Go**: no CGO, no per-platform `libwasmtime` to ship, trivial cross-compilation — a real
+  `go get`-ergonomics win the earlier decision undervalued. (Owner confirmed the switch 2026-06-17:
+  "purely positive.")
+- **WASI:** wazero's built-in `imports/wasi_snapshot_preview1` satisfies SPEC §10 with no hand-rolled
+  shim — the loader always instantiates it (unused namespaces are ignored, so pure-compute modules are
+  unaffected). This was the one thing wasmtime-go offered "for free"; wazero matches it.
 
-- `go.mod` declaring the module path + `wasmtime-go` dependency
-- The loader API itself (see below)
-- WIT parsing / interface introspection
-- Canonical ABI marshalling code
-- Any test suite
+The `wasmtime-go` import path was also spiked and **does** build here (CGO + mingw gcc, `add(3,4)=7`),
+so the reversal is on merits, not feasibility.
 
-## Intended public API surface (NOT yet implemented)
+## Current state — IMPLEMENTED + SPEC-3.0.0 conformant (2026-06-17)
 
-The Go-idiomatic equivalents of the reference loader's `wasmImport` / `createSingleton` /
-`InstancePool` are **not present**. When implemented they should mirror the cross-language SPEC
-while reading naturally in Go — likely something like a `Load(ctx, path, opts) (*Module, error)`
-singleton entry point and a pool type (`NewPool(...)` with `Acquire`/`Release`/`Run`) backed by
-fresh wasmtime-go instances. Treat the exact shape as undecided until the first package lands; record
-the decision here when it is made.
+The loader is **fully implemented and passing the reference suite** (was a pre-implementation stub).
+Source files (package `wasmloader`):
 
-## Canonical ABI / SPEC conformance status
+- `wit.go` — WIT parser (mirrors the JS `wit-parser.js`: kebab→camel, `s32` fallback, import/export
+  regex).
+- `abi.go` — Canonical-ABI marshalling: export param encode / result decode (incl. string params via
+  `cabi_realloc`, and the **callee-allocated string-return** convention — read the `[ptr,len]` pair,
+  decode, then call `cabi_post_<camel>`), plus the `env` host-import module (reflection-dispatched
+  user callbacks). Mirrors `abi.js` exactly.
+- `loader.go` — `Module` handle; `Load` (sync, file) / `Import` (file or `http(s)` URL); `Call` /
+  `Bind`; `@N` version pinning; WASI-P1 shim + `_initialize` (SPEC §10); raw fallback when no `.wit`.
+- `callbacks.go` — `Callbacks` builder (`NewCallbacks().On(camelName, fn)`).
+- `singleton.go` — `CreateSingleton` (load-once via `sync.Once`; identity-stable `*Module`).
+- `pool.go` — `InstancePool` (buffered-channel semaphore over N independent runtimes; `Acquire` /
+  `Release` / `Run` / `Close`).
 
-- **Cross-language `SPEC.md` is at v3.0.0 (2026-06-15)** — a BREAKING change. String/aggregate
-  **returns** moved from the OLD caller-allocated out-parameter convention (host allocates an
-  8-byte return area, passes its pointer as a trailing arg, reads `[ptr,len]` back) to the **NEW
-  canonical callee-allocated convention**: the export returns an i32 pointer to a callee-allocated
-  `[ptr,len]` pair, the host reads it, then calls a paired **`cabi_post_<name>(retPtr)`** export to
-  release that memory.
-- **This port's string-return handling: NONE EXISTS YET.** Because there is no source code, this
-  repo implements **neither** the old out-param convention **nor** the new callee-allocated +
-  `cabi_post_<name>` convention. There is nothing to migrate — when the loader is first written it
-  should be built **directly against SPEC v3.0.0** (callee-allocated returns + `cabi_post_<name>`),
-  skipping the deprecated out-param style entirely.
+### Public API
+
+`Load(path, cbs...) (*Module, error)` · `Import(ctx, src, cbs...) (*Module, error)` ·
+`(*Module).Call(name, args...) (any, error)` · `(*Module).Bind(name) func(...any)(any,error)` ·
+`(*Module).Exports()` · `(*Module).Close()` · `CreateSingleton(path, cbs...) func()(*Module,error)` ·
+`NewInstancePool(path, size, cbs...) *InstancePool` (+`Acquire`/`AcquireContext`/`Release`/`Run`/`Close`)
+· `NewCallbacks().On(name, fn)`.
+
+Exports are looked up by **camelCase** name (the WASM binary symbol; SPEC name-form rule). The typed
+codegen interface (PORT_PROMPT item 4) is NOT implemented — `Bind` covers the destructure pattern;
+codegen is a future add (not required for SPEC §7 conformance).
+
+## Canonical ABI / SPEC conformance
+
+- Built **directly against SPEC v3.0.0** (callee-allocated string returns + `cabi_post_<name>`); the
+  deprecated 2.x caller-allocated out-param convention was skipped entirely.
+- Component ABI only (matches the JS reference `abi.js`, which has no separate "wasic ABI" branch —
+  numeric/bool handling is profile-independent; strings use `cabi_realloc`/`cabi_post`).
+- **One bug found + fixed during bring-up:** bool results were decoded as `raw64 != 0`; an f64-arg
+  body can leave high-bit garbage in the i32 result register, so the **false** cases of `isPositive`/
+  `inRange` read as true. Fixed by masking to the low 32 bits (`uint32(raw[0]) != 0`) — a bool is an
+  i32 0/1.
 
 ## Tests
 
-- **Test command:** `go test ./...`
-- **Status:** no tests exist (no source code). The command currently has nothing to run.
+- **Command:** `go test ./...` — **7/7 pass** (`go vet` + `gofmt` clean). `loader_test.go` covers the
+  SPEC §8 fixtures (`math_50`, `booleans_50`, `strings_50`, `imports_50` — copied into `tests/`) plus
+  `Bind`, the singleton identity, and a concurrent `InstancePool` (size 2, 8 concurrent `Run`s).
 
 ## Build / release flow
 
-- **Build:** `go build ./...` (once `go.mod` and packages exist).
-- **Release:** Go modules are published by tagging a semver version (`git tag vX.Y.Z` + push); the
-  module then becomes installable via `go get` and indexed on **pkg.go.dev**. No registry upload
-  step is required beyond the tag.
+- **Build:** `go build ./...`. **Test:** `go test ./...`.
+- **Release:** tag a semver `git tag vX.Y.Z` + push; installable via `go get`, indexed on pkg.go.dev.
+  No registry upload / secrets needed (unlike the JSR/PyPI/Maven ports).
