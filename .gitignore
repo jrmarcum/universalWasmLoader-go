@@ -29,6 +29,10 @@ go.work.sum
 
 # Claude Code
 CLAUDE.md
+cmem/
+
+# Test fixtures (kept local, not published)
+tests/
 
 # Editor/IDE
 # .idea/

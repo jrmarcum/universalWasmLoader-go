@@ -129,4 +129,4 @@ singleton, and the concurrent instance pool.
 
 ## License
 
-MIT OR Apache-2.0 (see `LICENSE`).
+MIT (see `LICENSE`).
