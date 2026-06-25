@@ -1,0 +1,66 @@
+name: release
+
+# Publishes a GitHub Release whenever a semver tag is pushed.
+# Uses the built-in GITHUB_TOKEN (contents: write) — no PAT or local gh auth needed.
+# Manual runs (workflow_dispatch) let you backfill a tag that was pushed before
+# this workflow existed, e.g. v0.1.0.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to release (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - name: Checkout the tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # Sanity gate. Builds the library only — the test suite is intentionally
+      # NOT run here because the tests/ fixtures are not published with the repo.
+      - name: Build
+        run: go build ./...
+
+      - name: Extract release notes from CHANGELOG.md
+        run: |
+          awk -v ver="$TAG" '
+            $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
+            flag && /^## \[/ { exit }
+            flag && /^\[[^]]+\]: / { next }
+            flag { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "No CHANGELOG.md section for $TAG; using a default note."
+            echo "Release $TAG." > RELEASE_NOTES.md
+          fi
+          echo "----- notes for $TAG -----"
+          cat RELEASE_NOTES.md
+
+      - name: Create or update the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release edit "$TAG" --title "$TAG" --notes-file RELEASE_NOTES.md
+          else
+            gh release create "$TAG" --title "$TAG" --notes-file RELEASE_NOTES.md
+          fi
