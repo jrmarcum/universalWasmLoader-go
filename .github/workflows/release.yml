@@ -42,6 +42,13 @@ jobs:
 
       - name: Extract release notes from CHANGELOG.md
         run: |
+          # The tag may predate CHANGELOG.md (e.g. a backfilled v0.1.0). In that
+          # case pull the canonical CHANGELOG from the default branch.
+          if [ ! -f CHANGELOG.md ]; then
+            echo "CHANGELOG.md not present at $TAG; fetching from default branch."
+            git fetch --depth=1 origin "${{ github.event.repository.default_branch }}"
+            git show FETCH_HEAD:CHANGELOG.md > CHANGELOG.md
+          fi
           awk -v ver="$TAG" '
             $0 ~ "^## \\[" ver "\\]" { flag = 1; next }
             flag && /^## \[/ { exit }
